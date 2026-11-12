@@ -1,0 +1,1991 @@
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 1 : CONFIG
+-- ═══════════════════════════════════════════════════════════
+
+local CONFIG = {
+    UI_NAME = "IKK_AI_v7",
+
+    AUDIO = {
+        BPM = 120,          -- 1 บีต = 0.5 วินาที
+        MASTER = 1.0,       -- ระดับเสียงรวม (0 - 2 แนะนำ 0.8 - 1.2)
+        RHYTHM = true,      -- เปิด/ปิดจังหวะเบา ๆ ระหว่างโหลด
+    },
+
+    LOADING = {
+        DRIFT_PARTICLES = 14,
+        RING_SIZE = 132,
+        RING_SEGMENTS = 20,
+        RING_RADIUS = 56,
+    },
+
+    SCENE = {
+        CAM_DIST = 9,
+        FOV = 40,
+        ORBIT_PARTICLES = 64,
+        DUST = 44,
+        BURST_SHARDS = 110,
+        WARP_STREAKS = 46,
+    },
+
+    EXECUTE = {
+        BURST_PARTICLES = 26,
+        SCAN_LINES = 5,
+        MOTION_STREAKS = 16,
+    },
+}
+
+-- beats = จำนวนบีตของแต่ละขั้น (รวม 7 บีต)
+local STATUS_PLAN = {
+    { text = "AI SYSTEM BOOTING",        to = 10,  beats = 1 },
+    { text = "INITIALIZING CORE",        to = 26,  beats = 1 },
+    { text = "CONNECTING TO OPENROUTER", to = 54,  beats = 2 },
+    { text = "LOADING INTERFACE",        to = 78,  beats = 1 },
+    { text = "PREPARING SYSTEM",         to = 99,  beats = 1 },
+    { text = "SYSTEM READY",             to = 100, beats = 1 },
+}
+
+local LAYOUT = {
+    TITLE_Y = 0.10,
+    RING_Y = 0.45,      -- ตำแหน่งแกน 3D ตอนโหลด
+    PCT_Y = 0.67,
+    STATUS_Y = 0.735,
+    BAR_Y = 0.79,
+    CORE_READY_Y = 0.31, -- ตำแหน่งแกน 3D หน้า START
+    BUTTON_Y = 0.60,
+}
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 2 : THEME
+-- ═══════════════════════════════════════════════════════════
+
+local THEME = {
+    BG_TOP       = Color3.fromRGB(6, 12, 17),
+    BG_BOTTOM    = Color3.fromRGB(10, 30, 38),
+    OCEAN_MID    = Color3.fromRGB(12, 26, 34),
+    OCEAN_GLOW   = Color3.fromRGB(10, 60, 70),
+    CYAN         = Color3.fromRGB(34, 211, 238),
+    TEAL         = Color3.fromRGB(45, 212, 191),
+    WHITE        = Color3.fromRGB(235, 250, 255),
+    TEXT_PRIMARY = Color3.fromRGB(224, 242, 254),
+    TEXT_BRIGHT  = Color3.fromRGB(190, 235, 245),
+    TEXT_MUTED   = Color3.fromRGB(94, 124, 139),
+    STROKE_DIM   = Color3.fromRGB(26, 51, 61),
+}
+
+local BASE_SIZE   = UDim2.new(0.30, 0, 0, 54)
+local HOVER_SIZE  = UDim2.new(0.306, 0, 0, 55)
+local PRESS_SIZE  = UDim2.new(0.288, 0, 0, 51.5)
+local CHARGE_SIZE = UDim2.new(0.312, 0, 0, 56)
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 3 : SERVICES
+-- ═══════════════════════════════════════════════════════════
+
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Debris           = game:GetService("Debris")
+local HapticService    = game:GetService("HapticService")
+local SoundService     = game:GetService("SoundService")
+local Workspace        = game:GetService("Workspace")
+local ContentProvider  = game:GetService("ContentProvider")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    warn("[IKK_AI] LocalPlayer not found - run this script on the client.")
+    return
+end
+
+local function resolveUiParent()
+    local ok, ui = pcall(function()
+        return gethui and gethui()
+    end)
+    if ok and ui and typeof(ui) == "Instance" then
+        return ui
+    end
+    return LocalPlayer:WaitForChild("PlayerGui", 6)
+end
+
+local uiParent = resolveUiParent()
+if not uiParent then
+    warn("[IKK_AI] Cannot resolve UI parent (PlayerGui). Aborting.")
+    return
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 4 : UTILITY + BEAT CLOCK
+-- ═══════════════════════════════════════════════════════════
+
+local ConnectionRegistry = {}
+local TweenRegistry = {}
+
+local function connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(ConnectionRegistry, c)
+    return c
+end
+
+local function tween(inst, duration, props, style, direction, extra)
+    extra = extra or {}
+    local info = TweenInfo.new(
+        duration,
+        style or Enum.EasingStyle.Quad,
+        direction or Enum.EasingDirection.Out,
+        extra.repeats or 0,
+        extra.reverses or false,
+        extra.delay or 0
+    )
+    local t = TweenService:Create(inst, info, props)
+    table.insert(TweenRegistry, t)
+    t:Play()
+    return t
+end
+
+local function create(className, props)
+    local inst = Instance.new(className)
+    local parent = props.Parent
+    for k, v in pairs(props) do
+        if k ~= "Parent" then
+            inst[k] = v
+        end
+    end
+    if parent then
+        inst.Parent = parent
+    end
+    return inst
+end
+
+local function corner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = parent
+    return c
+end
+
+local function circleCorner(parent)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(1, 0)
+    c.Parent = parent
+    return c
+end
+
+local function stroke(parent, thickness, color, transparency)
+    local s = Instance.new("UIStroke")
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Thickness = thickness
+    s.Color = color
+    s.Transparency = transparency
+    s.Parent = parent
+    return s
+end
+
+local function gradient(parent, rotation, colorSeq, transSeq)
+    local g = Instance.new("UIGradient")
+    g.Rotation = rotation or 0
+    if colorSeq then g.Color = colorSeq end
+    if transSeq then g.Transparency = transSeq end
+    g.Parent = parent
+    return g
+end
+
+local function tracked(text, spacing)
+    spacing = spacing or 1
+    if spacing <= 0 then return text end
+    local pad = string.rep(" ", spacing)
+    local result = text:gsub("%S", "%0" .. pad)
+    local trim = #result - spacing
+    if trim > 0 then
+        result = result:sub(1, trim)
+    end
+    return result
+end
+
+local function captureAndHide(root)
+    local captured = {}
+    local objects = { root }
+    for _, d in ipairs(root:GetDescendants()) do
+        table.insert(objects, d)
+    end
+
+    for _, obj in ipairs(objects) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            if obj.TextTransparency < 1 then
+                table.insert(captured, { obj, "TextTransparency", obj.TextTransparency })
+                obj.TextTransparency = 1
+            end
+        elseif obj:IsA("Frame") then
+            if obj.BackgroundTransparency < 1 then
+                table.insert(captured, { obj, "BackgroundTransparency", obj.BackgroundTransparency })
+                obj.BackgroundTransparency = 1
+            end
+        elseif obj:IsA("UIStroke") then
+            if obj.Transparency < 1 then
+                table.insert(captured, { obj, "Transparency", obj.Transparency })
+                obj.Transparency = 1
+            end
+        end
+    end
+
+    return captured
+end
+
+local function revealCaptured(captured, delay, duration)
+    for _, entry in ipairs(captured) do
+        tween(
+            entry[1],
+            duration or 0.6,
+            { [entry[2]] = entry[3] },
+            Enum.EasingStyle.Quad,
+            Enum.EasingDirection.Out,
+            { delay = delay or 0 }
+        )
+    end
+end
+
+-- ── Beat clock : ทุกอย่างอ้างอิงนาฬิกาเดียวกัน ──────────────
+local BEAT = 60 / CONFIG.AUDIO.BPM
+local clock0 = os.clock()
+
+local function beatTime(n)
+    return clock0 + n * BEAT
+end
+
+local function currentBeat()
+    return (os.clock() - clock0) / BEAT
+end
+
+-- เวลาของ grid ถัดไป (div: 1 = บีต, 2 = 1/8, 4 = 1/16)
+local function nextGrid(div)
+    local step = BEAT / div
+    local n = math.ceil((os.clock() - clock0) / step - 0.001)
+    return clock0 + n * step
+end
+
+local function waitUntil(t)
+    local d = t - os.clock()
+    if d > 0 then task.wait(d) end
+end
+
+local screenGui, cover, fxOverlay, progressValue
+local loaderRefs = {}
+local execRefs = {}
+local bgRefs = {}
+local sceneRefs = {}
+local savedFieldOfView = nil
+local fovRestoreUntil = 0
+local spinnerActive = false
+local spinnerConn = nil
+local executing = false
+local dotsActive = false
+local execScreenActive = false
+local pressed = false
+local rhythmOn = false
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 5 : SOUND SYSTEM (mixed + beat-quantized + haptic)
+-- ═══════════════════════════════════════════════════════════
+
+-- volume = ระดับพื้นฐานของแต่ละเสียง (ผสมแล้ว ไม่เกิน ~0.65)
+-- ถ้ารู้สึกเสียงไหนดัง/เบาไป ปรับเฉพาะเลขตรงนี้ได้เลย
+local SOUND_PRESETS = {
+    tone   = { id = "rbxassetid://9120132783",      volume = 0.55 },
+    chirp  = { id = "rbxassetid://9119834603",      volume = 0.45 },
+    hum    = { id = "rbxassetid://9041056860",      volume = 0.50 },
+    pulse  = { id = "rbxassetid://9120158505",      volume = 0.60 },
+    blip   = { id = "rbxassetid://10066936758",     volume = 0.30 },
+    soft   = { id = "rbxassetid://83626664827645",  volume = 0.50 },
+    alarm  = { id = "rbxassetid://17582271658",     volume = 0.30 },
+    static = { id = "rbxassetid://9117295563",      volume = 0.25 },
+    seq    = { id = "rbxassetid://9114648992",      volume = 0.40 },
+    click  = { id = "rbxassetid://119541807359284", volume = 0.55 },
+    sci    = { id = "rbxassetid://104530151078585", volume = 0.50 },
+    chime  = { id = "rbxassetid://9125644410",      volume = 0.55 },
+}
+
+-- โน้ต Pentatonic (equal temperament) ไม่ให้เสียงเพี้ยนกัน
+local NOTE = {
+    root   = 1.0000,
+    second = 1.1225,
+    third  = 1.2599,
+    fifth  = 1.4983,
+    sixth  = 1.6818,
+    oct    = 2.0000,
+}
+local SCALE = { NOTE.root, NOTE.second, NOTE.third, NOTE.fifth, NOTE.sixth, NOTE.oct }
+
+local soundFolder = create("Folder", { Name = "IKK_Sounds", Parent = SoundService })
+
+local masterGroup = create("SoundGroup", {
+    Name = "IKK_Master",
+    Volume = CONFIG.AUDIO.MASTER,
+    Parent = soundFolder,
+})
+
+-- Master chain: Compressor กันเสียงแตก / EQ ลดความแหลม / Reverb ให้มีมิติ
+pcall(function()
+    create("CompressorSoundEffect", {
+        Threshold = -18, Ratio = 4, Attack = 0.02,
+        Release = 0.2, GainMakeup = 3, Parent = masterGroup,
+    })
+end)
+pcall(function()
+    create("EqualizerSoundEffect", {
+        LowGain = 1, MidGain = 0, HighGain = -2, Parent = masterGroup,
+    })
+end)
+pcall(function()
+    create("ReverbSoundEffect", {
+        DecayTime = 1.4, Density = 0.7, Diffusion = 0.8,
+        DryLevel = -2, WetLevel = -14, Parent = masterGroup,
+    })
+end)
+
+task.spawn(function()
+    pcall(function()
+        local ids = {}
+        for _, preset in pairs(SOUND_PRESETS) do
+            table.insert(ids, preset.id)
+        end
+        ContentProvider:PreloadAsync(ids)
+    end)
+end)
+
+local SoundSystem = {}
+local lastHoverAt = 0
+
+-- scale = ตัวคูณจาก volume พื้นฐาน (default 1)
+function SoundSystem.play(name, speed, scale)
+    local preset = SOUND_PRESETS[name]
+    if not preset then return end
+
+    pcall(function()
+        local s = Instance.new("Sound")
+        s.SoundId = preset.id
+        s.Volume = preset.volume * (scale or 1)
+        s.PlaybackSpeed = speed or 1
+        s.SoundGroup = masterGroup
+        s.Parent = soundFolder
+        s.Ended:Connect(function() s:Destroy() end)
+        s:Play()
+        Debris:AddItem(s, 10)
+    end)
+end
+
+-- items: { name, speed, vol, beat = เลื่อนกี่บีต, sec = เลื่อนกี่วินาที }
+-- startAt: เวลา absolute (os.clock) ที่ถือเป็นบีต 0 ของคิวนี้
+function SoundSystem.stack(items, startAt)
+    startAt = startAt or os.clock()
+    for _, it in ipairs(items) do
+        local at = startAt + (it.beat or 0) * BEAT + (it.sec or 0)
+        local d = at - os.clock()
+        if d <= 0.004 then
+            SoundSystem.play(it.name, it.speed, it.vol)
+        else
+            task.delay(d, function()
+                SoundSystem.play(it.name, it.speed, it.vol)
+            end)
+        end
+    end
+end
+
+SoundSystem.cues = {}
+
+function SoundSystem.cues.boot(at)
+    SoundSystem.stack({
+        { name = "hum",   speed = 0.62, vol = 1.0,  beat = 0 },
+        { name = "chime", speed = 0.85, vol = 1.0,  beat = 0 },
+        { name = "seq",   speed = 0.94, vol = 0.8,  beat = 0 },
+        { name = "tone",  speed = NOTE.root,  vol = 0.8, beat = 0.5 },
+        { name = "tone",  speed = NOTE.third, vol = 0.8, beat = 1.0 },
+        { name = "tone",  speed = NOTE.fifth, vol = 0.8, beat = 1.5 },
+        { name = "chirp", speed = NOTE.oct,   vol = 0.7, beat = 1.75 },
+    }, at)
+end
+
+function SoundSystem.cues.status(i, at)
+    if i == #STATUS_PLAN then
+        SoundSystem.stack({
+            { name = "chime", speed = 1.0,        vol = 1.0, beat = 0 },
+            { name = "tone",  speed = NOTE.root,  vol = 0.8, beat = 0 },
+            { name = "tone",  speed = NOTE.fifth, vol = 0.8, beat = 0 },
+            { name = "tone",  speed = NOTE.oct,   vol = 0.7, beat = 0.5 },
+        }, at)
+        return
+    end
+
+    local items = {
+        { name = "tone", speed = SCALE[math.min(i, #SCALE)], vol = 0.9, beat = 0 },
+    }
+    if i == 3 then
+        table.insert(items, { name = "blip", speed = NOTE.sixth, vol = 1.0, beat = 0.5 })
+        table.insert(items, { name = "blip", speed = NOTE.oct,   vol = 1.0, beat = 1.0 })
+    end
+    SoundSystem.stack(items, at)
+end
+
+function SoundSystem.cues.hover()
+    -- quantize เข้า 1/16 note ให้ลงจังหวะ
+    local at = nextGrid(4)
+    SoundSystem.stack({
+        { name = "blip", speed = NOTE.sixth, vol = 0.9 },
+    }, at)
+end
+
+function SoundSystem.cues.click()
+    SoundSystem.stack({
+        { name = "sci",   speed = 1.00, vol = 0.9, sec = 0 },
+        { name = "click", speed = 1.04, vol = 1.0, sec = 0.02 },
+        { name = "tone",  speed = NOTE.oct, vol = 0.6, sec = 0.05 },
+    })
+end
+
+-- Riser 2 บีต (8th-note arpeggio) แล้วไปลง Impact ที่บีต 2
+function SoundSystem.cues.charge(at)
+    SoundSystem.stack({
+        { name = "pulse",  speed = 0.85, vol = 1.0, beat = 0 },
+        { name = "hum",    speed = 0.70, vol = 1.0, beat = 0 },
+        { name = "static", speed = 0.72, vol = 0.9, beat = 0.25 },
+        { name = "tone",   speed = NOTE.root,   vol = 0.7, beat = 0.0 },
+        { name = "tone",   speed = NOTE.second, vol = 0.7, beat = 0.5 },
+        { name = "tone",   speed = NOTE.third,  vol = 0.75, beat = 1.0 },
+        { name = "tone",   speed = NOTE.fifth,  vol = 0.8, beat = 1.5 },
+        { name = "chirp",  speed = NOTE.oct,    vol = 0.7, beat = 1.75 },
+    }, at)
+end
+
+function SoundSystem.cues.burst(at)
+    SoundSystem.stack({
+        { name = "hum",    speed = 0.55, vol = 1.0, beat = 0 },
+        { name = "static", speed = 0.85, vol = 0.9, beat = 0 },
+        { name = "alarm",  speed = 0.58, vol = 0.8, beat = 0.02 },
+        { name = "chirp",  speed = NOTE.sixth, vol = 0.9, beat = 0.04 },
+        { name = "soft",   speed = NOTE.third, vol = 1.0, beat = 0.06 },
+        { name = "chime",  speed = NOTE.oct,   vol = 0.8, beat = 0.25 },
+    }, at)
+end
+
+function SoundSystem.cues.success(at)
+    SoundSystem.stack({
+        { name = "chime", speed = 1.00, vol = 1.0, beat = 0 },
+        { name = "soft",  speed = 0.60, vol = 0.9, beat = 0 },
+        { name = "tone",  speed = NOTE.root,  vol = 0.8, beat = 0 },
+        { name = "tone",  speed = NOTE.fifth, vol = 0.8, beat = 0.25 },
+        { name = "chirp", speed = NOTE.oct,   vol = 0.7, beat = 0.5 },
+    }, at)
+end
+
+function SoundSystem.cues.transition(at)
+    SoundSystem.stack({
+        { name = "soft", speed = 0.88,       vol = 1.0, beat = 0 },
+        { name = "blip", speed = NOTE.fifth, vol = 1.0, beat = 0.25 },
+    }, at)
+end
+
+function SoundSystem.playHover()
+    if os.clock() - lastHoverAt < 0.08 then return end
+    lastHoverAt = os.clock()
+    SoundSystem.cues.hover()
+end
+
+-- Rhythm เบา ๆ : kick ทุกบีต 1 และ 3 / hat ที่ off-beat
+function SoundSystem.onBeat(b)
+    if not rhythmOn or not CONFIG.AUDIO.RHYTHM then return end
+
+    local pos = b % 4
+    if pos == 0 then
+        SoundSystem.play("pulse", 0.70, 0.45)
+    elseif pos == 2 then
+        SoundSystem.play("pulse", 0.85, 0.30)
+    end
+
+    task.delay(BEAT / 2, function()
+        if rhythmOn then
+            SoundSystem.play("static", 2.2, 0.30)
+        end
+    end)
+end
+
+local function hapticPulse()
+    pcall(function()
+        for i = 1, 4 do
+            local gamepadType = Enum.UserInputType["Gamepad" .. i]
+            if HapticService:IsVibrationSupported(gamepadType) then
+                HapticService:SetMotor(gamepadType, Enum.VibrationMotor.Large, 0.55)
+                task.delay(0.16, function()
+                    pcall(function()
+                        HapticService:SetMotor(gamepadType, Enum.VibrationMotor.Large, 0)
+                    end)
+                end)
+            end
+        end
+    end)
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 6 : 2D FX BUILDERS
+-- ═══════════════════════════════════════════════════════════
+
+local function spawnDriftParticle(parent)
+    local x = 0.08 + math.random() * 0.84
+    local y = 0.55 + math.random() * 0.42
+    local drift = (math.random() - 0.5) * 0.07
+    local size = 2 + math.random() * 2.5
+
+    local p = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(x, y),
+        Size = UDim2.fromOffset(size, size),
+        BackgroundColor3 = (math.random(2) == 1) and THEME.CYAN or THEME.TEAL,
+        BackgroundTransparency = 0.45 + math.random() * 0.25,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        Parent = parent,
+    })
+    circleCorner(p)
+
+    local dur = 7 + math.random() * 4
+    tween(p, dur, {
+        Position = UDim2.fromScale(x + drift, -0.08),
+        BackgroundTransparency = 1,
+    }, Enum.EasingStyle.Linear, Enum.EasingDirection.Out, { delay = math.random() * 2.5 })
+
+    Debris:AddItem(p, dur + 3)
+end
+
+local function spawnEnergyRings()
+    for i = 1, 3 do
+        task.delay((i - 1) * 0.065, function()
+            local ring = create("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromOffset(90, 90),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ZIndex = 44,
+                Parent = fxOverlay,
+            })
+            circleCorner(ring)
+            local ringStroke = stroke(ring, 2.5, THEME.CYAN, 0.1)
+
+            tween(ring, 0.85, { Size = UDim2.fromOffset(560, 560) },
+                Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+            tween(ringStroke, 0.85, { Transparency = 1 },
+                Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+            Debris:AddItem(ring, 1)
+        end)
+    end
+end
+
+local function spawnRadialGlow()
+    local glow = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(140, 140),
+        BackgroundColor3 = THEME.CYAN,
+        BackgroundTransparency = 0.8,
+        BorderSizePixel = 0,
+        ZIndex = 43,
+        Parent = fxOverlay,
+    })
+    circleCorner(glow)
+
+    tween(glow, 0.8, {
+        Size = UDim2.fromOffset(640, 640),
+        BackgroundTransparency = 1,
+    }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+    Debris:AddItem(glow, 0.9)
+end
+
+local function spawnScanLines()
+    for i = 1, CONFIG.EXECUTE.SCAN_LINES do
+        task.delay((i - 1) * BEAT / 8, function()
+            local line = create("Frame", {
+                Position = UDim2.new(0, 0, -0.06, 0),
+                Size = UDim2.new(1, 0, 0, 2),
+                BackgroundColor3 = THEME.CYAN,
+                BackgroundTransparency = 0.3,
+                BorderSizePixel = 0,
+                ZIndex = 46,
+                Parent = fxOverlay,
+            })
+            gradient(line, 0, nil, NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.5, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            }))
+
+            tween(line, 0.6, {
+                Position = UDim2.new(0, 0, 1.08, 0),
+                BackgroundTransparency = 1,
+            }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+
+            Debris:AddItem(line, 0.7)
+        end)
+    end
+end
+
+local function spawnParticleBurst()
+    local camera = Workspace.CurrentCamera
+    local vp = camera and camera.ViewportSize or Vector2.new(1280, 720)
+    local n = CONFIG.EXECUTE.BURST_PARTICLES
+
+    for i = 1, n do
+        task.delay(math.random() * 0.1, function()
+            local ang = (i / n) * math.pi * 2 + math.random() * 0.4
+            local dist = 120 + math.random() * 180
+            local size = 3 + math.random() * 4
+
+            local dot = create("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromOffset(vp.X / 2, vp.Y / 2),
+                Size = UDim2.fromOffset(size, size),
+                BackgroundColor3 = (i % 2 == 0) and THEME.CYAN or THEME.TEAL,
+                BackgroundTransparency = 0.1,
+                BorderSizePixel = 0,
+                ZIndex = 47,
+                Parent = fxOverlay,
+            })
+            circleCorner(dot)
+
+            tween(dot, 0.7 + math.random() * 0.35, {
+                Position = UDim2.fromOffset(
+                    vp.X / 2 + math.cos(ang) * dist,
+                    vp.Y / 2 + math.sin(ang) * dist
+                ),
+                BackgroundTransparency = 1,
+            }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+            Debris:AddItem(dot, 1.15)
+        end)
+    end
+end
+
+local function spawnWipe()
+    for i = 1, 2 do
+        task.delay((i - 1) * 0.1, function()
+            local bar = create("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromScale(-0.3, 0.5),
+                Size = UDim2.new(0.16, 0, 1, 0),
+                BackgroundColor3 = THEME.CYAN,
+                BackgroundTransparency = i == 1 and 0.5 or 0.78,
+                BorderSizePixel = 0,
+                ZIndex = 48,
+                Parent = fxOverlay,
+            })
+            gradient(bar, 0, nil, NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1),
+                NumberSequenceKeypoint.new(0.5, 0.25),
+                NumberSequenceKeypoint.new(1, 1),
+            }))
+
+            tween(bar, 0.5, { Position = UDim2.fromScale(1.3, 0.5) },
+                Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
+
+            Debris:AddItem(bar, 0.6)
+        end)
+    end
+end
+
+local function spawnRipple(screenPos)
+    local button = execRefs.button
+    if not button or not button.Parent then return end
+
+    local rel = Vector2.new(screenPos.X, screenPos.Y) - button.AbsolutePosition
+
+    local r = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromOffset(rel.X, rel.Y),
+        Size = UDim2.fromOffset(0, 0),
+        BackgroundColor3 = THEME.CYAN,
+        BackgroundTransparency = 0.55,
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = button,
+    })
+    circleCorner(r)
+
+    tween(r, 0.5, {
+        Size = UDim2.fromOffset(240, 240),
+        BackgroundTransparency = 1,
+    }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+
+    Debris:AddItem(r, 0.55)
+end
+
+local function spawnMotionBlur()
+    local camera = Workspace.CurrentCamera
+    local vp = camera and camera.ViewportSize or Vector2.new(1280, 720)
+
+    for _ = 1, CONFIG.EXECUTE.MOTION_STREAKS do
+        task.delay(math.random() * 0.35, function()
+            local y = math.random() * vp.Y
+            local len = vp.X * (0.22 + math.random() * 0.4)
+            local h = 1.5 + math.random() * 2.5
+            local fromLeft = (math.random(2) == 1)
+            local startX = fromLeft and -len or (vp.X + len)
+            local endX = fromLeft and (vp.X + len) or -len
+
+            local streak = create("Frame", {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromOffset(startX, y),
+                Size = UDim2.fromOffset(len, h),
+                BackgroundColor3 = (math.random(2) == 1) and THEME.CYAN or THEME.TEAL,
+                BackgroundTransparency = 0.3 + math.random() * 0.35,
+                BorderSizePixel = 0,
+                ZIndex = 47,
+                Parent = fxOverlay,
+            })
+            corner(streak, 2)
+
+            tween(streak, 0.5 + math.random() * 0.5, {
+                Position = UDim2.fromOffset(endX, y),
+                BackgroundTransparency = 1,
+            }, Enum.EasingStyle.Sine, Enum.EasingDirection.In)
+
+            Debris:AddItem(streak, 1.15)
+        end)
+    end
+end
+
+local function fovPunch()
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+
+        if not savedFieldOfView then
+            savedFieldOfView = cam.FieldOfView
+        end
+
+        fovRestoreUntil = os.clock() + 1.2
+
+        tween(cam, 0.18, { FieldOfView = savedFieldOfView + 7 },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        tween(cam, 0.45, { FieldOfView = savedFieldOfView },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.InOut, { delay = 0.25 })
+    end)
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 7 : 3D SCENE (ViewportFrame core + particles)
+-- ═══════════════════════════════════════════════════════════
+
+local function newPart(props)
+    local p = {
+        Anchored = true,
+        CanCollide = false,
+        CanQuery = false,
+        CanTouch = false,
+        CastShadow = false,
+        Material = Enum.Material.Neon,
+        TopSurface = Enum.SurfaceType.Smooth,
+        BottomSurface = Enum.SurfaceType.Smooth,
+    }
+    for k, v in pairs(props) do p[k] = v end
+    return create("Part", p)
+end
+
+local function buildRing(radius, segs, thick, color, parent)
+    local model = Instance.new("Model")
+    local pivot = newPart({
+        Name = "Pivot", Size = Vector3.new(0.05, 0.05, 0.05),
+        Transparency = 1, Parent = model,
+    })
+    model.PrimaryPart = pivot
+
+    local segLen = 2 * math.pi * radius / segs * 0.92
+    for i = 1, segs do
+        local a = (i - 1) / segs * math.pi * 2
+        local cf = CFrame.new(math.cos(a) * radius, math.sin(a) * radius, 0)
+            * CFrame.Angles(0, 0, a + math.pi / 2)
+        newPart({
+            Size = Vector3.new(segLen, thick, thick),
+            CFrame = cf,
+            Color = (i % 5 == 0) and THEME.WHITE or color,
+            Parent = model,
+        })
+    end
+
+    model.Parent = parent
+    return model
+end
+
+local function buildCube(edge, thick, color, parent)
+    local model = Instance.new("Model")
+    local pivot = newPart({
+        Name = "Pivot", Size = Vector3.new(0.05, 0.05, 0.05),
+        Transparency = 1, Parent = model,
+    })
+    model.PrimaryPart = pivot
+
+    local h = edge / 2
+    for _, sa in ipairs({ -1, 1 }) do
+        for _, sb in ipairs({ -1, 1 }) do
+            newPart({ Size = Vector3.new(edge + thick, thick, thick),
+                CFrame = CFrame.new(0, sa * h, sb * h), Color = color, Parent = model })
+            newPart({ Size = Vector3.new(thick, edge + thick, thick),
+                CFrame = CFrame.new(sa * h, 0, sb * h), Color = color, Parent = model })
+            newPart({ Size = Vector3.new(thick, thick, edge + thick),
+                CFrame = CFrame.new(sa * h, sb * h, 0), Color = color, Parent = model })
+        end
+    end
+
+    model.Parent = parent
+    return model
+end
+
+local function buildScene()
+    local camera = Workspace.CurrentCamera
+    local vpSize = camera and camera.ViewportSize or Vector2.new(1280, 720)
+    local dist0 = CONFIG.SCENE.CAM_DIST
+    local fov0 = CONFIG.SCENE.FOV
+
+    -- คำนวณขนาดโลก 3D ให้แกนพอดีกับวง HUD (ไม่ขึ้นกับขนาดจอ)
+    local visH = 2 * dist0 * math.tan(math.rad(fov0 / 2))
+    local visW = visH * (vpSize.X / vpSize.Y)
+    local pxPerUnit = vpSize.Y / visH
+    local S = (CONFIG.LOADING.RING_SIZE - 26) / pxPerUnit
+
+    local viewport = create("ViewportFrame", {
+        Name = "Scene3D",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ImageTransparency = 1,
+        ZIndex = 3,
+        Ambient = Color3.fromRGB(90, 130, 150),
+        LightColor = Color3.fromRGB(210, 245, 255),
+        LightDirection = Vector3.new(-1, -1.2, -0.8),
+        Parent = screenGui,
+    })
+
+    local vcam = Instance.new("Camera")
+    vcam.FieldOfView = fov0
+    vcam.Parent = viewport
+    viewport.CurrentCamera = vcam
+
+    local world = Instance.new("Model")
+    world.Name = "World"
+    world.Parent = viewport
+
+    -- proxies สำหรับ tween
+    local proxies = create("Folder", { Name = "Proxies", Parent = screenGui })
+    local function num(name, v)
+        return create("NumberValue", { Name = name, Value = v, Parent = proxies })
+    end
+    local spin = num("Spin", 1.0)
+    local camDist = num("CamDist", dist0)
+    local fovV = num("Fov", fov0)
+    local coreY = num("CoreY", LAYOUT.RING_Y)
+
+    -- ── แกนกลาง ────────────────────────────────────────────
+    local sphereBase = S * 0.20
+    local shellBase = S * 0.34
+
+    local sphere = newPart({
+        Shape = Enum.PartType.Ball,
+        Size = Vector3.one * sphereBase,
+        Color = THEME.CYAN, Parent = world,
+    })
+    local shell = newPart({
+        Shape = Enum.PartType.Ball,
+        Size = Vector3.one * shellBase,
+        Material = Enum.Material.SmoothPlastic,
+        Transparency = 0.78, Color = THEME.CYAN, Parent = world,
+    })
+
+    local thick = S * 0.02
+    local ring1 = buildRing(S * 0.36, 28, thick, THEME.CYAN, world)
+    local ring2 = buildRing(S * 0.43, 32, thick, THEME.TEAL, world)
+    local ring3 = buildRing(S * 0.50, 36, thick, THEME.CYAN, world)
+    local cube = buildCube(S * 0.22, thick * 0.9, THEME.TEAL, world)
+
+    -- ── พาทิเคิลโคจร ───────────────────────────────────────
+    local orbiters = {}
+    for i = 1, CONFIG.SCENE.ORBIT_PARTICLES do
+        local sz = S * (0.012 + math.random() * 0.022)
+        local color = (i % 7 == 0) and THEME.WHITE
+            or ((i % 2 == 0) and THEME.CYAN or THEME.TEAL)
+        local part = newPart({
+            Shape = Enum.PartType.Ball,
+            Size = Vector3.one * sz,
+            Color = color, Parent = world,
+        })
+        orbiters[i] = {
+            part = part,
+            r = S * (0.62 + math.random() * 1.5),
+            ang = math.random() * math.pi * 2,
+            speed = (0.35 + math.random() * 0.9) * (math.random(2) == 1 and 1 or -1),
+            tilt = CFrame.Angles(math.random() * math.pi, math.random() * math.pi, 0),
+            tw = 1.5 + math.random() * 3,
+            ph = math.random() * 6.28,
+        }
+    end
+
+    -- ── ฝุ่นลอยหลายชั้นความลึก ────────────────────────────
+    local dust = {}
+    for i = 1, CONFIG.SCENE.DUST do
+        local sz = 0.015 + math.random() * 0.035
+        local pos = Vector3.new(
+            (math.random() - 0.5) * visW * 1.4,
+            (math.random() - 0.5) * visH * 1.5,
+            -8 + math.random() * 11
+        )
+        local part = newPart({
+            Shape = Enum.PartType.Ball,
+            Size = Vector3.one * sz,
+            Color = (i % 2 == 0) and THEME.CYAN or THEME.TEAL,
+            Transparency = 0.5 + math.random() * 0.35,
+            CFrame = CFrame.new(pos), Parent = world,
+        })
+        dust[i] = { part = part, pos = pos, v = 0.12 + math.random() * 0.35 }
+    end
+
+    local shards, streaks, waves = {}, {}, {}
+
+    local state = {
+        nx = 0, ny = 0, tx = 0, ty = 0,
+        pulse = 0, shake = 0, angle = 0,
+        t0 = os.clock(),
+    }
+
+    -- pointer / touch parallax
+    connect(UserInputService.InputChanged, function(input)
+        local ut = input.UserInputType
+        if ut == Enum.UserInputType.MouseMovement or ut == Enum.UserInputType.Touch then
+            local cam = Workspace.CurrentCamera
+            local sz = cam and cam.ViewportSize or vpSize
+            state.tx = math.clamp((input.Position.X / sz.X - 0.5) * 2, -1, 1)
+            state.ty = math.clamp((input.Position.Y / sz.Y - 0.5) * 2, -1, 1)
+        end
+    end)
+
+    local function centerNow()
+        return Vector3.new(0, (0.5 - coreY.Value) * visH, 0)
+    end
+
+    -- shockwave วงแหวน 3D
+    local function spawnWave(center)
+        local m = buildRing(S * 0.5, 36, S * 0.03, THEME.CYAN, world)
+        m:PivotTo(CFrame.new(center))
+        local parts = {}
+        for _, d in ipairs(m:GetChildren()) do
+            if d:IsA("BasePart") and d.Name ~= "Pivot" then
+                table.insert(parts, d)
+            end
+        end
+        table.insert(waves, { model = m, parts = parts, age = 0, dur = 0.8 })
+    end
+
+    local lastBeat = -1
+
+    local function update(dt)
+        if not viewport.Parent then return end
+
+        local now = os.clock()
+        local t = now - state.t0
+
+        -- beat detection : ทั้งภาพและเสียงใช้นาฬิกาเดียวกัน
+        local beatIdx = math.floor((now - clock0) / BEAT)
+        if beatIdx ~= lastBeat then
+            lastBeat = beatIdx
+            state.pulse = 1
+            SoundSystem.onBeat(beatIdx)
+        end
+
+        -- smoothing + idle sway (มีมิติเสมอแม้ไม่ได้ขยับเมาส์)
+        local gx = state.tx * 0.7 + math.sin(t * 0.7) * 0.25
+        local gy = state.ty * 0.7 + math.cos(t * 0.53) * 0.18
+        local k = 1 - math.exp(-6 * dt)
+        state.nx += (gx - state.nx) * k
+        state.ny += (gy - state.ny) * k
+
+        state.pulse = math.max(0, state.pulse - dt * 3.4)
+        state.shake = math.max(0, state.shake - dt * 2.6)
+        state.angle += dt * spin.Value
+
+        local a = state.angle
+        local p = state.pulse * state.pulse
+        local center = centerNow()
+        local sceneCF = CFrame.new(center)
+            * CFrame.Angles(state.ny * 0.35, state.nx * 0.55, 0)
+
+        -- core
+        sphere.CFrame = sceneCF
+        sphere.Size = Vector3.one * (sphereBase * (1 + 0.35 * p))
+        sphere.Color = THEME.CYAN:Lerp(THEME.WHITE, p * 0.7)
+
+        shell.CFrame = sceneCF * CFrame.Angles(a * 0.3, a * 0.2, 0)
+        shell.Size = Vector3.one * (shellBase * (1 + 0.18 * p))
+        shell.Transparency = 0.78 - p * 0.2
+
+        ring1:PivotTo(sceneCF * CFrame.Angles(0, a * 1.0, a * 0.35))
+        ring2:PivotTo(sceneCF * CFrame.Angles(math.rad(60) + a * 0.5, -a * 0.8, 0))
+        ring3:PivotTo(sceneCF * CFrame.Angles(math.rad(-50), a * 0.6, -a * 0.9))
+        cube:PivotTo(sceneCF * CFrame.Angles(a * 0.7, a * 1.1, a * 0.3))
+
+        -- orbiters
+        local sp = 0.6 + spin.Value * 0.4
+        for _, o in ipairs(orbiters) do
+            o.ang += dt * o.speed * sp
+            local pos = o.tilt * Vector3.new(math.cos(o.ang) * o.r, 0, math.sin(o.ang) * o.r)
+            o.part.CFrame = sceneCF * CFrame.new(pos)
+            o.part.Transparency = 0.12 + 0.55 * (0.5 + 0.5 * math.sin(t * o.tw + o.ph))
+        end
+
+        -- dust
+        for _, d in ipairs(dust) do
+            d.pos += Vector3.new(0, d.v * dt, 0)
+            if d.pos.Y > visH * 0.75 then
+                d.pos = Vector3.new(d.pos.X, -visH * 0.75, d.pos.Z)
+            end
+            d.part.CFrame = CFrame.new(d.pos)
+        end
+
+        -- camera (parallax + shake + dolly)
+        local cd = camDist.Value
+        local amt = visW * 0.018
+        local sh = state.shake * 0.12
+        local camPos = Vector3.new(
+            -state.nx * amt + (math.random() - 0.5) * sh,
+            state.ny * amt + (math.random() - 0.5) * sh,
+            cd
+        )
+        vcam.CFrame = CFrame.lookAt(camPos, Vector3.zero)
+        vcam.FieldOfView = fovV.Value
+
+        -- shards
+        local i = 1
+        while i <= #shards do
+            local s = shards[i]
+            s.age += dt
+            if s.age >= s.life then
+                s.part:Destroy()
+                shards[i] = shards[#shards]
+                shards[#shards] = nil
+            else
+                s.vel *= (1 - dt * 1.8)
+                s.pos += s.vel * dt
+                s.part.CFrame = CFrame.lookAt(s.pos, s.pos + s.vel + Vector3.new(0, 0, 1e-4))
+                s.part.Transparency = (s.age / s.life) ^ 2
+                i += 1
+            end
+        end
+
+        -- warp streaks (พุ่งเข้าหากล้อง)
+        i = 1
+        while i <= #streaks do
+            local s = streaks[i]
+            s.z += s.speed * dt
+            if s.z - s.len / 2 > cd then
+                s.part:Destroy()
+                streaks[i] = streaks[#streaks]
+                streaks[#streaks] = nil
+            else
+                s.part.CFrame = CFrame.new(s.x, s.y, s.z)
+                s.part.Transparency = 0.85 - math.clamp((s.z + 28) / 14, 0, 1) * 0.7
+                i += 1
+            end
+        end
+
+        -- shockwaves
+        i = 1
+        while i <= #waves do
+            local w = waves[i]
+            w.age += dt
+            local e = w.age / w.dur
+            if e >= 1 then
+                w.model:Destroy()
+                waves[i] = waves[#waves]
+                waves[#waves] = nil
+            else
+                pcall(function() w.model:ScaleTo(0.2 + e * 16) end)
+                local tr = 0.15 + 0.85 * e
+                for _, part in ipairs(w.parts) do
+                    part.Transparency = tr
+                end
+                i += 1
+            end
+        end
+
+        -- parallax พื้นหลัง 2D
+        if bgRefs.oceanGlow and bgRefs.oceanGlow.Parent then
+            bgRefs.oceanGlow.Position = UDim2.fromScale(0.5 + state.nx * 0.015, 1.08)
+        end
+    end
+
+    connect(RunService.Heartbeat, update)
+
+    -- ── API ────────────────────────────────────────────────
+    local api = {
+        viewport = viewport,
+        spin = spin, camDist = camDist, fov = fovV, coreY = coreY,
+        state = state,
+    }
+
+    function api.burst()
+        state.pulse = 1
+        state.shake = 1
+        local c = centerNow()
+
+        for n = 1, CONFIG.SCENE.BURST_SHARDS do
+            local dir = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)
+            if dir.Magnitude < 0.05 then dir = Vector3.new(0, 1, 0) end
+            dir = dir.Unit
+
+            local color = (n % 3 == 0) and THEME.WHITE
+                or ((n % 2 == 0) and THEME.CYAN or THEME.TEAL)
+            local len = S * (0.05 + math.random() * 0.14)
+            local part = newPart({
+                Size = Vector3.new(S * 0.02, S * 0.02, len),
+                Color = color, CFrame = CFrame.new(c), Parent = world,
+            })
+            table.insert(shards, {
+                part = part, pos = c,
+                vel = dir * S * (3 + math.random() * 9),
+                age = 0, life = 0.7 + math.random() * 0.6,
+            })
+        end
+
+        for w = 1, 3 do
+            task.delay((w - 1) * 0.07, function()
+                if world.Parent then spawnWave(c) end
+            end)
+        end
+    end
+
+    function api.warp()
+        for _ = 1, CONFIG.SCENE.WARP_STREAKS do
+            task.delay(math.random() * 0.5, function()
+                if not world.Parent then return end
+                local ang = math.random() * math.pi * 2
+                local rad = visW * (0.05 + math.random() * 0.5)
+                local len = 3 + math.random() * 6
+                local x, y = math.cos(ang) * rad, math.sin(ang) * rad
+                local part = newPart({
+                    Size = Vector3.new(0.025, 0.025, len),
+                    Color = (math.random(2) == 1) and THEME.CYAN or THEME.WHITE,
+                    Transparency = 0.85,
+                    CFrame = CFrame.new(x, y, -28), Parent = world,
+                })
+                table.insert(streaks, {
+                    part = part, x = x, y = y, z = -28, len = len,
+                    speed = 45 + math.random() * 45,
+                })
+            end)
+        end
+    end
+
+    return api
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 8 : LOADING SYSTEM
+-- ═══════════════════════════════════════════════════════════
+
+local function buildBackground()
+    local bgFrame = create("Frame", {
+        Name = "Background",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BorderSizePixel = 0,
+        ZIndex = 1,
+        Parent = screenGui,
+    })
+    gradient(bgFrame, 90, ColorSequence.new(THEME.BG_TOP, THEME.BG_BOTTOM))
+
+    local oceanGlow = create("Frame", {
+        Name = "OceanGlow",
+        AnchorPoint = Vector2.new(0.5, 1),
+        Position = UDim2.fromScale(0.5, 1.08),
+        Size = UDim2.new(1.7, 0, 0.6, 0),
+        BackgroundColor3 = THEME.OCEAN_GLOW,
+        BackgroundTransparency = 0.94,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = screenGui,
+    })
+    circleCorner(oceanGlow)
+
+    local oceanGlowTween = tween(oceanGlow, 7, { BackgroundTransparency = 0.9 },
+        Enum.EasingStyle.Sine, Enum.EasingDirection.InOut,
+        { repeats = -1, reverses = true })
+
+    fxOverlay = create("Frame", {
+        Name = "FX",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 40,
+        Parent = screenGui,
+    })
+
+    cover = create("Frame", {
+        Name = "Cover",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0,
+        BorderSizePixel = 0,
+        ZIndex = 100,
+        Parent = screenGui,
+    })
+    gradient(cover, 90, ColorSequence.new(THEME.BG_TOP, THEME.BG_BOTTOM))
+
+    bgRefs = {
+        background = bgFrame,
+        oceanGlow = oceanGlow,
+        oceanGlowTween = oceanGlowTween,
+    }
+end
+
+local function buildLoader()
+    local screen = create("Frame", {
+        Name = "Loader",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 5,
+        Parent = screenGui,
+    })
+
+    local titleContainer = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.fromScale(0.5, LAYOUT.TITLE_Y + 0.025),
+        Size = UDim2.new(0.6, 0, 0, 0),
+        BackgroundTransparency = 1,
+        Parent = screen,
+    })
+
+    create("UIListLayout", {
+        Padding = UDim.new(0, 6),
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = titleContainer,
+    })
+
+    local title = create("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+        Font = Enum.Font.GothamBold,
+        RichText = true,
+        Text = 'IKK_AI <font color="#22d3ee">v8</font>',
+        TextColor3 = THEME.TEXT_PRIMARY,
+        TextScaled = true,
+        LayoutOrder = 1,
+        Parent = titleContainer,
+    })
+    create("UITextSizeConstraint", { MaxTextSize = 34, MinTextSize = 18, Parent = title })
+
+    create("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 14),
+        Font = Enum.Font.GothamMedium,
+        Text = tracked("OPENROUTER API", 2),
+        TextColor3 = THEME.TEXT_MUTED,
+        TextSize = 11,
+        LayoutOrder = 2,
+        Parent = titleContainer,
+    })
+
+    -- วง HUD ล้อมแกน 3D
+    local ringSize = CONFIG.LOADING.RING_SIZE
+
+    local ringContainer = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, LAYOUT.RING_Y),
+        Size = UDim2.fromOffset(ringSize, ringSize),
+        BackgroundTransparency = 1,
+        Parent = screen,
+    })
+
+    local staticRing = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(ringSize - 6, ringSize - 6),
+        BackgroundTransparency = 1,
+        Parent = ringContainer,
+    })
+    circleCorner(staticRing)
+    stroke(staticRing, 1.2, THEME.STROKE_DIM, 0.55)
+
+    local segments = {}
+    local segCount = CONFIG.LOADING.RING_SEGMENTS
+
+    for i = 1, segCount do
+        local ang = (i - 1) / segCount * math.pi * 2
+        local seg = create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromOffset(
+                ringSize / 2 + math.cos(ang) * CONFIG.LOADING.RING_RADIUS,
+                ringSize / 2 + math.sin(ang) * CONFIG.LOADING.RING_RADIUS
+            ),
+            Size = UDim2.fromOffset(3, 10),
+            BackgroundColor3 = THEME.CYAN,
+            BackgroundTransparency = 0.65,
+            Rotation = math.deg(ang) - 90,
+            BorderSizePixel = 0,
+            Parent = ringContainer,
+        })
+        corner(seg, 2)
+        segments[i] = seg
+    end
+
+    local percentLabel = create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, LAYOUT.PCT_Y),
+        Size = UDim2.fromOffset(90, 22),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        Text = "0%",
+        TextColor3 = THEME.TEXT_PRIMARY,
+        TextSize = 18,
+        Parent = screen,
+    })
+
+    local statusLabel = create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, LAYOUT.STATUS_Y),
+        Size = UDim2.new(0.8, 0, 0, 16),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        Text = tracked("AI SYSTEM BOOTING", 1),
+        TextColor3 = THEME.TEXT_PRIMARY,
+        TextSize = 13,
+        Parent = screen,
+    })
+
+    local barContainer = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, LAYOUT.BAR_Y),
+        Size = UDim2.new(0.3, 0, 0, 3),
+        BackgroundColor3 = THEME.STROKE_DIM,
+        BackgroundTransparency = 0.45,
+        BorderSizePixel = 0,
+        Parent = screen,
+    })
+    create("UISizeConstraint", {
+        MinSize = Vector2.new(170, 3), MaxSize = Vector2.new(380, 3), Parent = barContainer,
+    })
+    corner(barContainer, 2)
+
+    local fill = create("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = THEME.CYAN,
+        BorderSizePixel = 0,
+        Parent = barContainer,
+    })
+    corner(fill, 2)
+    gradient(fill, 0, ColorSequence.new(THEME.CYAN, THEME.TEAL))
+
+    create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.93),
+        Size = UDim2.new(0.7, 0, 0, 12),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        Text = tracked("IKK_AI SYSTEMS // SECURE LINK", 1),
+        TextColor3 = THEME.TEXT_MUTED,
+        TextSize = 10,
+        Parent = screen,
+    })
+
+    progressValue = create("NumberValue", { Name = "Progress", Value = 0, Parent = screen })
+
+    connect(progressValue.Changed, function(v)
+        percentLabel.Text = math.floor(v) .. "%"
+        fill.Size = UDim2.new(math.clamp(v / 100, 0, 1), 0, 1, 0)
+    end)
+
+    -- สปินเนอร์ 2D วิ่งตามบีต (1 รอบ = 2 บีต) แทนเวลาตายตัว
+    spinnerConn = connect(RunService.Heartbeat, function()
+        if not spinnerActive then return end
+
+        local t = (currentBeat() / 2) % 1
+        local head = t * segCount
+
+        for i, seg in ipairs(segments) do
+            local d = (head - (i - 1)) % segCount
+            seg.BackgroundTransparency = 0.06 + (d / segCount) * 0.86
+        end
+    end)
+
+    loaderRefs = {
+        screen = screen,
+        titleContainer = titleContainer,
+        statusLabel = statusLabel,
+        segments = segments,
+    }
+
+    loaderRefs.captured = captureAndHide(screen)
+end
+
+-- แต่ละขั้นเริ่มพอดีบีต เสียงและภาพลงพร้อมกัน
+local function runStatusPlan()
+    local cursor = math.ceil(currentBeat() - 0.02)
+
+    for i, step in ipairs(STATUS_PLAN) do
+        waitUntil(beatTime(cursor))
+
+        SoundSystem.cues.status(i, beatTime(cursor))
+
+        local label = loaderRefs.statusLabel
+        tween(label, 0.1, { TextTransparency = 1 },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        task.delay(0.1, function()
+            if label and label.Parent then
+                label.Text = tracked(step.text, 1)
+                tween(label, 0.16, { TextTransparency = 0 },
+                    Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+            end
+        end)
+
+        tween(progressValue, step.beats * BEAT * 0.92, { Value = step.to },
+            Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+
+        cursor += step.beats
+    end
+
+    waitUntil(beatTime(cursor))
+end
+
+local function destroyLoader()
+    spinnerActive = false
+
+    if spinnerConn then
+        spinnerConn:Disconnect()
+    end
+
+    if loaderRefs.screen then
+        loaderRefs.screen:Destroy()
+    end
+
+    loaderRefs = {}
+end
+
+local function fadeGuiOut(duration)
+    if bgRefs.oceanGlowTween then
+        bgRefs.oceanGlowTween:Cancel()
+    end
+
+    if bgRefs.oceanGlow then
+        tween(bgRefs.oceanGlow, duration, { BackgroundTransparency = 1 },
+            Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    end
+
+    if bgRefs.background then
+        tween(bgRefs.background, duration, { BackgroundTransparency = 1 },
+            Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    end
+
+    if sceneRefs.viewport then
+        tween(sceneRefs.viewport, duration, { ImageTransparency = 1 },
+            Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    end
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 9 : EXECUTE SYSTEM
+-- ═══════════════════════════════════════════════════════════
+
+local PAYLOAD_URL = "https://raw.githubusercontent.com/IKK-AI/IKK_AI/refs/heads/main/SebasAI_v7.lua.txt"
+
+local function executePayload()
+    local ok, err = pcall(function()
+        if type(loadstring) ~= "function" then
+            error("loadstring not available (ต้องรันผ่าน executor)")
+        end
+
+        loadstring(game:HttpGet(PAYLOAD_URL))()
+    end)
+
+    if not ok then
+        warn("[IKK_AI] payload failed:", err)
+    end
+end
+
+local startExecuteSequence
+local shutdownSystem
+
+local function applyHover(on)
+    local button = execRefs.button
+    if not button or not button.Parent then return end
+
+    tween(button, 0.18, { Size = on and HOVER_SIZE or BASE_SIZE },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    tween(execRefs.fill, 0.18, { BackgroundTransparency = on and 0.24 or 0.35 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    tween(execRefs.stroke, 0.18, {
+        Transparency = on and 0.18 or 0.45,
+        Thickness = on and 1.9 or 1.6,
+    }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+    if on then
+        SoundSystem.playHover()
+    end
+end
+
+local function buildExecuteScreen()
+    local screen = create("Frame", {
+        Name = "ExecuteScreen",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 5,
+        Parent = screenGui,
+    })
+
+    local topDot = create("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(0.5, -78, 0.085, 0),
+        Size = UDim2.fromOffset(8, 8),
+        BackgroundColor3 = THEME.TEAL,
+        BackgroundTransparency = 0.25,
+        BorderSizePixel = 0,
+        Parent = screen,
+    })
+    circleCorner(topDot)
+
+    local topLabel = create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.085),
+        Size = UDim2.new(0, 140, 0, 14),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        Text = tracked("SYSTEM READY", 1),
+        TextColor3 = THEME.TEAL,
+        TextSize = 12,
+        Parent = screen,
+    })
+
+    local button = create("TextButton", {
+        Name = "StartButton",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, LAYOUT.BUTTON_Y),
+        Size = BASE_SIZE,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ClipsDescendants = true,
+        Text = "",
+        Parent = screen,
+    })
+    corner(button, 12)
+
+    create("UISizeConstraint", {
+        MinSize = Vector2.new(200, 48), MaxSize = Vector2.new(340, 64), Parent = button,
+    })
+
+    local fill = create("Frame", {
+        Name = "Fill",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(1, 1, 1),
+        BackgroundTransparency = 0.35,
+        BorderSizePixel = 0,
+        ZIndex = 1,
+        Parent = button,
+    })
+    corner(fill, 12)
+    gradient(fill, 90, ColorSequence.new(Color3.fromRGB(16, 38, 48), THEME.OCEAN_MID))
+
+    local buttonStroke = stroke(button, 1.6, THEME.CYAN, 0.45)
+
+    local label = create("TextLabel", {
+        Name = "Label",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        Text = tracked("START", 1),
+        TextColor3 = THEME.TEXT_PRIMARY,
+        TextSize = 16,
+        ZIndex = 4,
+        Parent = button,
+    })
+
+    local highlight = create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0, 2),
+        Size = UDim2.new(0.7, 0, 0, 1),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BackgroundTransparency = 0.86,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Parent = button,
+    })
+
+    local sub = create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, LAYOUT.BUTTON_Y, 46),
+        Size = UDim2.new(0.8, 0, 0, 13),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        Text = tracked("AUTHENTICATED - CHANNEL OPEN", 1),
+        TextColor3 = THEME.TEXT_MUTED,
+        TextSize = 11,
+        Parent = screen,
+    })
+
+    local footer = create("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.93),
+        Size = UDim2.new(0.7, 0, 0, 12),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        Text = tracked("IKK_AI v8 - OPENROUTER API - SECURE CHANNEL", 1),
+        TextColor3 = THEME.TEXT_MUTED,
+        TextSize = 10,
+        Parent = screen,
+    })
+
+    execRefs = {
+        screen = screen, button = button, fill = fill, label = label,
+        highlight = highlight, stroke = buttonStroke, topDot = topDot,
+        topLabel = topLabel, sub = sub, footer = footer,
+    }
+
+    local captured = captureAndHide(screen)
+    revealCaptured(captured, 0.15, 0.55)
+
+    button.Size = UDim2.new(0.264, 0, 0, 47)
+    tween(button, 0.6, { Size = BASE_SIZE },
+        Enum.EasingStyle.Back, Enum.EasingDirection.Out, { delay = 0.2 })
+
+    task.delay(0.9, function()
+        if executing or not button.Parent then return end
+
+        -- หายใจเป็นจังหวะ 4 บีต
+        tween(label, BEAT * 4, { TextColor3 = THEME.TEXT_BRIGHT },
+            Enum.EasingStyle.Sine, Enum.EasingDirection.InOut,
+            { repeats = -1, reverses = true })
+        tween(topDot, BEAT * 2, { BackgroundTransparency = 0.65 },
+            Enum.EasingStyle.Sine, Enum.EasingDirection.InOut,
+            { repeats = -1, reverses = true })
+    end)
+
+    connect(button.MouseEnter, function()
+        if executing or not UserInputService.MouseEnabled then return end
+        applyHover(true)
+    end)
+
+    connect(button.MouseLeave, function()
+        if executing then return end
+        applyHover(false)
+    end)
+
+    connect(button.InputBegan, function(input)
+        if executing or pressed then return end
+
+        local t = input.UserInputType
+        if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+            pressed = true
+
+            spawnRipple(input.Position)
+            SoundSystem.cues.click()
+            hapticPulse()
+
+            tween(button, 0.09, { Size = PRESS_SIZE },
+                Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+            tween(fill, 0.09, { BackgroundTransparency = 0.28 },
+                Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+            tween(buttonStroke, 0.09, { Transparency = 0.28, Thickness = 2.1 },
+                Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        end
+    end)
+
+    connect(button.InputEnded, function(input)
+        if executing or not pressed then return end
+
+        local t = input.UserInputType
+        if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+            pressed = false
+            startExecuteSequence()
+        end
+    end)
+
+    connect(UserInputService.InputBegan, function(input, gameProcessed)
+        if gameProcessed or executing or not execScreenActive then return end
+
+        if input.KeyCode == Enum.KeyCode.Return then
+            startExecuteSequence()
+        end
+    end)
+end
+
+-- Timeline (นับจาก T0 = จังหวะ 1/8 ถัดไปหลังกด):
+--   0b    Charge เริ่ม (riser 2 บีต, แกน 3D หมุนเร็วขึ้น + กล้องพุ่งเข้า)
+--   1.5b  UI ปุ่มค่อย ๆ หาย
+--   2b    IMPACT (burst เสียง + 3D shards/shockwave/warp + 2D FX)
+--   2.5b  เฟด GUI + แกน 3D (1.5 บีต)
+--   4b    รัน payload + success cue
+--   5.5b  เก็บกวาด
+function startExecuteSequence()
+    if executing or not execScreenActive then return end
+
+    executing = true
+    dotsActive = true
+    execScreenActive = false
+    rhythmOn = false
+
+    local T0 = nextGrid(2)
+    waitUntil(T0)
+
+    SoundSystem.cues.charge(T0)
+
+    local button = execRefs.button
+    local buttonStroke = execRefs.stroke
+    local label = execRefs.label
+    local fill = execRefs.fill
+    local chargeDur = BEAT * 2
+
+    label.Text = "INITIALIZING"
+
+    tween(button, chargeDur, { Size = CHARGE_SIZE },
+        Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+    tween(fill, chargeDur, { BackgroundTransparency = 0.2 },
+        Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+    tween(buttonStroke, chargeDur, { Transparency = 0.05, Thickness = 2.6 },
+        Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+
+    -- 3D: หมุนเร็วขึ้น, ดึงแกนเข้ากลางจอ, กล้องพุ่งเข้าหา
+    if sceneRefs.spin then
+        tween(sceneRefs.spin, chargeDur, { Value = 9 },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        tween(sceneRefs.coreY, chargeDur, { Value = 0.5 },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+        tween(sceneRefs.camDist, chargeDur, { Value = 4.6 },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    end
+
+    task.spawn(function()
+        local pattern = { "", ".", "..", "..." }
+        local idx = 0
+        while dotsActive and button.Parent do
+            idx = idx % #pattern + 1
+            label.Text = "INITIALIZING" .. pattern[idx]
+            task.wait(BEAT / 2)
+        end
+    end)
+
+    -- UI ปุ่มหาย ก่อน impact ครึ่งบีต
+    waitUntil(T0 + BEAT * 1.5)
+    dotsActive = false
+
+    tween(fill, 0.35, { BackgroundTransparency = 1 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    tween(label, 0.35, { TextTransparency = 1 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    tween(buttonStroke, 0.35, { Transparency = 1 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+    for _, el in ipairs({
+        execRefs.topDot, execRefs.topLabel, execRefs.sub,
+        execRefs.footer, execRefs.highlight,
+    }) do
+        if el:IsA("TextLabel") then
+            tween(el, 0.35, { TextTransparency = 1 },
+                Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        else
+            tween(el, 0.35, { BackgroundTransparency = 1 },
+                Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        end
+    end
+
+    Debris:AddItem(button, 0.5)
+
+    -- ══ IMPACT (ลงบีตพอดี) ══
+    waitUntil(T0 + BEAT * 2)
+
+    SoundSystem.cues.burst(T0 + BEAT * 2)
+
+    spawnEnergyRings()
+    spawnRadialGlow()
+    spawnScanLines()
+    spawnParticleBurst()
+    spawnMotionBlur()
+    spawnWipe()
+    fovPunch()
+
+    if sceneRefs.burst then
+        sceneRefs.burst()
+        sceneRefs.warp()
+
+        -- กล้องถอยกลับ (recoil) + FOV กระชาก
+        tween(sceneRefs.camDist, BEAT * 1.2, { Value = 7.5 },
+            Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        tween(sceneRefs.fov, 0.12, { Value = CONFIG.SCENE.FOV + 22 },
+            Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        tween(sceneRefs.fov, BEAT * 1.4, { Value = CONFIG.SCENE.FOV },
+            Enum.EasingStyle.Quint, Enum.EasingDirection.Out, { delay = 0.12 })
+    end
+
+    waitUntil(T0 + BEAT * 2.5)
+    fadeGuiOut(BEAT * 1.5)
+
+    waitUntil(T0 + BEAT * 4)
+
+    local ok, err = pcall(executePayload)
+    if not ok then
+        warn("[IKK_AI] executePayload() error:", err)
+    end
+
+    SoundSystem.cues.success(T0 + BEAT * 4)
+
+    waitUntil(T0 + BEAT * 5.5)
+
+    shutdownSystem()
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+-- MODULE 10 : CLEANUP SYSTEM
+-- ═══════════════════════════════════════════════════════════
+
+local cleaned = false
+
+function shutdownSystem()
+    if cleaned then return end
+    cleaned = true
+    rhythmOn = false
+
+    pcall(function()
+        for _, c in ipairs(ConnectionRegistry) do
+            c:Disconnect()
+        end
+    end)
+
+    pcall(function()
+        for _, t in ipairs(TweenRegistry) do
+            t:Cancel()
+        end
+    end)
+
+    pcall(function()
+        if savedFieldOfView
+            and os.clock() < fovRestoreUntil
+            and Workspace.CurrentCamera then
+            Workspace.CurrentCamera.FieldOfView = savedFieldOfView
+        end
+    end)
+
+    pcall(function()
+        if screenGui then
+            screenGui:Destroy()
+        end
+    end)
+
+    pcall(function()
+        Debris:AddItem(soundFolder, 6)
+    end)
+end
+
+pcall(function()
+    if getgenv then
+        getgenv().IKK_AI_V8 = { shutdown = shutdownSystem }
+    end
+end)
+
+
+-- ═══════════════════════════════════════════════════════════
+-- ENTRY POINT : BOOT SEQUENCE
+-- ═══════════════════════════════════════════════════════════
+
+local function boot()
+    local prev = uiParent:FindFirstChild(CONFIG.UI_NAME)
+    if prev then
+        prev:Destroy()
+    end
+
+    screenGui = create("ScreenGui", {
+        Name = CONFIG.UI_NAME,
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 999,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = uiParent,
+    })
+
+    connect(screenGui.Destroying, shutdownSystem)
+
+    buildBackground()
+    sceneRefs = buildScene()
+    buildLoader()
+
+    -- เริ่มนาฬิกาบีต ณ จุดนี้ : บีต 0 = เสียง boot
+    clock0 = os.clock()
+    sceneRefs.state.t0 = clock0
+    rhythmOn = true
+
+    SoundSystem.cues.boot(clock0)
+
+    tween(cover, 0.85, { BackgroundTransparency = 1 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.Out, { delay = 0.12 })
+
+    tween(loaderRefs.titleContainer, 0.8,
+        { Position = UDim2.fromScale(0.5, LAYOUT.TITLE_Y) },
+        Enum.EasingStyle.Quint, Enum.EasingDirection.Out, { delay = 0.3 })
+
+    tween(sceneRefs.viewport, 0.9, { ImageTransparency = 0 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.Out, { delay = 0.3 })
+
+    revealCaptured(loaderRefs.captured, 0.35, 0.65)
+
+    -- Intro 2 บีต แล้ว status แรกเริ่มที่บีต 2
+    waitUntil(beatTime(2))
+
+    spinnerActive = true
+
+    task.delay(0.2, function()
+        if loaderRefs.screen then
+            for _ = 1, CONFIG.LOADING.DRIFT_PARTICLES do
+                spawnDriftParticle(loaderRefs.screen)
+            end
+        end
+    end)
+
+    runStatusPlan()
+
+    spinnerActive = false
+
+    for _, seg in ipairs(loaderRefs.segments) do
+        tween(seg, 0.35, { BackgroundTransparency = 0.12 })
+    end
+
+    loaderRefs.statusLabel.TextColor3 = THEME.TEAL
+
+    SoundSystem.cues.transition(os.clock())
+
+    -- ค้าง READY 1 บีต แล้วเปลี่ยนฉาก
+    task.wait(BEAT)
+
+    tween(cover, BEAT / 2, { BackgroundTransparency = 0 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+    task.wait(BEAT / 2 + 0.02)
+
+    destroyLoader()
+    buildExecuteScreen()
+
+    -- แกน 3D เลื่อนขึ้นไปอยู่เหนือปุ่ม START
+    tween(sceneRefs.coreY, BEAT * 2, { Value = LAYOUT.CORE_READY_Y },
+        Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+    tween(cover, BEAT, { BackgroundTransparency = 1 },
+        Enum.EasingStyle.Quad, Enum.EasingDirection.Out, { delay = 0.1 })
+
+    execScreenActive = true
+end
+
+task.spawn(function()
+    local ok, err = pcall(boot)
+
+    if not ok then
+        warn("[IKK_AI] boot failed:", err)
+        shutdownSystem()
+    end
+end)
