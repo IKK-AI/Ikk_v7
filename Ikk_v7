@@ -1495,7 +1495,7 @@ end
 -- MODULE 9 : EXECUTE SYSTEM
 -- ═══════════════════════════════════════════════════════════
 
-local PAYLOAD_URL = "https://raw.githubusercontent.com/IKK-AI/IKK_AI/refs/heads/main/SebasAI_v7.lua.txt"
+local PAYLOAD_URL = "https://raw.githubusercontent.com/IKK-AI/IKK_AI/refs/heads/main/SebasAI_v7.lua%20(1).txt"
 
 local function executePayload()
     local ok, err = pcall(function()
